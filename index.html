@@ -57,7 +57,7 @@
 
     .backup-box {
       display: flex; gap: 8px; margin-top: 12px; padding-top: 12px;
-      border-top: 1px solid var(--border); flex-wrap: wrap;
+      border-top: 1px solid var(--border); flex-wrap: wrap; align-items: center;
     }
 
     input[type="text"], input[type="time"], textarea {
@@ -73,9 +73,13 @@
     .btn-success { background-color: var(--success); }
     .btn-danger { background-color: var(--danger); }
 
+    .day-tabs-container {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 15px; border-bottom: 2px solid var(--border); padding-bottom: 8px;
+    }
+
     .day-tabs {
-      display: flex; gap: 8px; overflow-x: auto; padding-bottom: 8px;
-      margin-bottom: 15px; border-bottom: 2px solid var(--border);
+      display: flex; gap: 8px; overflow-x: auto;
     }
 
     .tab-btn { background-color: #e5e7eb; color: var(--text); border-radius: 20px; padding: 8px 16px; font-weight: normal; }
@@ -114,6 +118,10 @@
     }
 
     #lightbox img { max-width: 95vw; max-height: 95vh; }
+
+    .bottom-controls {
+      display: flex; gap: 10px; margin-top: 15px;
+    }
   </style>
 
   <!-- Sortable.js -->
@@ -188,12 +196,24 @@
       // リアルタイム同期の維持
       const itemsCol = collection(db, "rooms", roomId, "items");
       onSnapshot(itemsCol, (snapshot) => {
-        itemsData = {};
+        const isEditing = !!document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA');
+        
         snapshot.forEach((docSnap) => {
           itemsData[docSnap.id] = docSnap.data();
         });
+
+        // 不要になった削除済みキーを除去
+        const currentDocIds = new Set(snapshot.docs.map(d => d.id));
+        Object.keys(itemsData).forEach(id => {
+          if (!currentDocIds.has(id)) delete itemsData[id];
+        });
+
         document.getElementById('status').innerText = 'リアルタイム同期中 (' + new Date().toLocaleTimeString() + ')';
-        renderAll();
+        
+        // 入力作業中でない場合のみ再描画を実行し、文字入力の阻害を防止する
+        if (!isEditing && !isDragging) {
+          renderAll();
+        }
       }, (err) => {
         document.getElementById('status').innerText = '接続エラー: 設定または通信状態を確認してください';
       });
@@ -259,6 +279,35 @@
       renderAll();
     }
 
+    // ★ 日の削除機能
+    window.deleteCurrentDay = async function() {
+      if (!confirm(`${currentDay}日目のデータおよび予定をすべて削除してもよろしいですか？`)) return;
+
+      const batch = writeBatch(db);
+      
+      // 現在の日のアイテムを削除し、それ以降の日のday値を1つ減らす
+      Object.entries(itemsData).forEach(([id, item]) => {
+        const itemRef = doc(db, "rooms", roomId, "items", id);
+        if (item.day === currentDay) {
+          batch.delete(itemRef);
+          delete itemsData[id];
+        } else if (item.day > currentDay) {
+          item.day -= 1;
+          batch.update(itemRef, { day: item.day });
+        }
+      });
+
+      await batch.commit();
+
+      if (currentDay > 1) {
+        currentDay -= 1;
+      }
+      
+      document.getElementById('timeline').innerHTML = '';
+      renderAll();
+      alert("選択された日を削除しました。");
+    };
+
     function initSortable() {
       const timelineEl = document.getElementById('timeline');
       new Sortable(timelineEl, {
@@ -269,12 +318,10 @@
           isDragging = false;
           Array.from(timelineEl.children).forEach((child, index) => {
             const item = itemsData[child.id];
-            if (item && item.order !== index) {
+            if (item) {
               item.order = index;
-              saveItem(child.id, { order: index });
             }
           });
-          renderAll();
         }
       });
     }
@@ -291,13 +338,21 @@
       const timeInput = document.createElement('input');
       timeInput.type = 'time';
       timeInput.className = 'item-time';
-      timeInput.addEventListener('input', () => saveItem(id, { time: timeInput.value }));
+      // 入力時はローカルデータのみ更新（スムーズな入力を実現するため）
+      timeInput.addEventListener('input', () => {
+        if (!itemsData[id]) itemsData[id] = { day: currentDay, order: 0 };
+        itemsData[id].time = timeInput.value;
+      });
 
       const memoInput = document.createElement('textarea');
       memoInput.className = 'item-memo';
       memoInput.rows = 2;
       memoInput.placeholder = '移動地（Park-ID/運用周波数など）...';
-      memoInput.addEventListener('input', () => saveItem(id, { memo: memoInput.value }));
+      // 入力時はローカルデータのみ更新（スムーズな入力を実現するため）
+      memoInput.addEventListener('input', () => {
+        if (!itemsData[id]) itemsData[id] = { day: currentDay, order: 0 };
+        itemsData[id].memo = memoInput.value;
+      });
       memoInput.addEventListener('paste', (e) => {
         const files = Array.from(e.clipboardData?.files || []).filter(f => f.type.startsWith('image/'));
         if (files.length) { e.preventDefault(); processAndSaveImages(id, files); }
@@ -366,31 +421,56 @@
       lb.style.display = 'flex';
     }
 
-    async function saveItem(id, patchData) {
-      const itemRef = doc(db, "rooms", roomId, "items", id);
-      const current = itemsData[id] || {};
-      await setDoc(itemRef, { ...current, ...patchData }, { merge: true });
-    }
+    // ★ 全データを手動でFirebaseに一括保存する機能
+    window.saveAllItems = async function() {
+      try {
+        const batch = writeBatch(db);
+        
+        // DOMの現在の並び順に基づいて order を割り振って保存準備
+        const timelineEl = document.getElementById('timeline');
+        Array.from(timelineEl.children).forEach((child, index) => {
+          if (itemsData[child.id]) {
+            itemsData[child.id].order = index;
+          }
+        });
 
-    window.addItem = async function() {
+        Object.entries(itemsData).forEach(([id, item]) => {
+          const itemRef = doc(db, "rooms", roomId, "items", id);
+          batch.set(itemRef, item, { merge: true });
+        });
+
+        await batch.commit();
+        alert("変更内容を保存・送信しました！");
+      } catch (err) {
+        console.error("保存失敗:", err);
+        alert("保存に失敗しました。接続状態を確認してください。");
+      }
+    };
+
+    window.addItem = function() {
       const newItemId = 'item_' + Date.now();
       const orders = Object.values(itemsData).filter(i => i.day === currentDay).map(i => i.order);
-      const item = {
+      itemsData[newItemId] = {
         time: '09:00',
         memo: '',
         day: currentDay,
         order: orders.length ? Math.max(...orders) + 1 : 0,
         images: []
       };
-      await saveItem(newItemId, item);
+      
+      const timelineEl = document.getElementById('timeline');
+      const el = createItemElement(newItemId);
+      timelineEl.appendChild(el);
     };
 
     async function removeItem(id) {
       if (!confirm('この予定を削除しますか？')) return;
+      delete itemsData[id];
+      const el = document.getElementById(id);
+      if (el) el.remove();
       await deleteDoc(doc(db, "rooms", roomId, "items", id));
     }
 
-    // 画像圧縮とBase64データ化（確実に表示・保存させる処理）
     async function processAndSaveImages(id, files) {
       const currentImages = itemsData[id]?.images || [];
       const newImages = [];
@@ -404,7 +484,9 @@
         }
       }
 
-      await saveItem(id, { images: [...currentImages, ...newImages] });
+      itemsData[id].images = [...currentImages, ...newImages];
+      const el = document.getElementById(id);
+      if (el) renderImages(el, id);
     }
 
     function resizeImage(file, maxWidth, maxHeight) {
@@ -442,11 +524,11 @@
     async function removeImage(id, idx) {
       if (!confirm('画像を削除しますか？')) return;
       const currentImages = itemsData[id]?.images || [];
-      const nextImages = currentImages.filter((_, i) => i !== idx);
-      await saveItem(id, { images: nextImages });
+      itemsData[id].images = currentImages.filter((_, i) => i !== idx);
+      const el = document.getElementById(id);
+      if (el) renderImages(el, id);
     }
 
-    // バックアップ機能 (JSON出力)
     window.exportData = function() {
       const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(itemsData, null, 2));
       const downloadAnchor = document.createElement('a');
@@ -457,7 +539,6 @@
       downloadAnchor.remove();
     };
 
-    // リストア機能 (JSON取込)
     window.importData = function(event) {
       const file = event.target.files[0];
       if (!file) return;
@@ -520,8 +601,9 @@
     </div>
 
     <div class="backup-box">
+      <button onclick="saveAllItems()" class="btn-success">💾 変更を保存</button>
       <button onclick="exportData()" class="btn-secondary">📥 バックアップ保存</button>
-      <button onclick="document.getElementById('restoreFile').click()" class="btn-success">📤 リストア(復元)</button>
+      <button onclick="document.getElementById('restoreFile').click()" class="btn-secondary">📤 リストア(復元)</button>
       <input type="file" id="restoreFile" accept=".json" style="display:none" onchange="importData(event)">
     </div>
 
@@ -529,9 +611,15 @@
   </div>
 
   <div class="card">
-    <div class="day-tabs" id="dayTabs"></div>
+    <div class="day-tabs-container">
+      <div class="day-tabs" id="dayTabs"></div>
+      <button onclick="deleteCurrentDay()" class="btn-danger" style="font-size: 12px; padding: 6px 10px;">この日を削除</button>
+    </div>
     <div id="timeline"></div>
-    <button onclick="addItem()" style="margin-top: 15px; width: 100%;">+ 予定を追加</button>
+    <div class="bottom-controls">
+      <button onclick="addItem()" style="flex: 1;">+ 予定を追加</button>
+      <button onclick="saveAllItems()" class="btn-success" style="flex: 1;">💾 保存</button>
+    </div>
   </div>
 </div>
 
