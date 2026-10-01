@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex,nofollow">
+  <title>POTA CW長野県一斉移動 (リアルタイム共有版)</title>
+  <style>
+    :root {
+      --bg-color: #f4f6f8;
+      --card-bg: #ffffff;
+      --primary: #2563eb;
+      --danger: #ef4444;
+      --text: #1f2937;
+      --border: #e5e7eb;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: var(--bg-color);
+      color: var(--text);
+      margin: 0;
+      padding: 12px;
+    }
+
+    .container { max-width: 800px; margin: 0 auto; }
+
+    #authModal {
+      position: fixed; inset: 0; background: rgba(244, 246, 248, 0.95);
+      display: flex; align-items: center; justify-content: center; z-index: 9999;
+    }
+
+    .auth-card {
+      background: #ffffff; padding: 24px; border-radius: 12px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15); text-align: center; max-width: 320px; width: 90%;
+    }
+
+    .auth-card input[type="password"] {
+      width: 100%; padding: 10px; margin-bottom: 12px; border: 1px solid var(--border);
+      border-radius: 6px; font-size: 16px; box-sizing: border-box;
+    }
+
+    .auth-card button { width: 100%; padding: 10px; }
+    .auth-error { color: var(--danger); font-size: 13px; margin-top: 8px; display: none; }
+    #mainApp { display: none; }
+
+    .card {
+      background: var(--card-bg); border-radius: 12px; padding: 16px;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); margin-bottom: 16px;
+    }
+
+    h1 { font-size: 1.4rem; margin-top: 0; margin-bottom: 8px; }
+
+    .share-box { display: flex; gap: 8px; margin-bottom: 12px; }
+    .share-box input { flex: 1; padding: 8px; border: 1px solid var(--border); border-radius: 6px; }
+
+    input[type="text"], input[type="time"], textarea {
+      padding: 10px; border: 1px solid var(--border); border-radius: 6px; box-sizing: border-box; font-size: 15px;
+    }
+
+    button {
+      background-color: var(--primary); color: white; border: none; padding: 10px 14px;
+      border-radius: 6px; cursor: pointer; font-weight: bold; white-space: nowrap;
+    }
+
+    .btn-secondary { background-color: #6b7280; }
+    .btn-danger { background-color: var(--danger); }
+
+    .day-tabs {
+      display: flex; gap: 8px; overflow-x: auto; padding-bottom: 8px;
+      margin-bottom: 15px; border-bottom: 2px solid var(--border);
+    }
+
+    .tab-btn { background-color: #e5e7eb; color: var(--text); border-radius: 20px; padding: 8px 16px; font-weight: normal; }
+    .tab-btn.active { background-color: var(--primary); color: white; font-weight: bold; }
+
+    .timeline-item {
+      display: grid; grid-template-columns: 28px 110px 1fr 40px; gap: 8px;
+      align-items: center; padding: 10px 8px; border: 1px solid var(--border);
+      border-radius: 8px; margin-bottom: 10px; background: white;
+    }
+
+    .drag-handle { text-align: center; color: #9ca3af; font-size: 20px; cursor: grab; user-select: none; }
+    .status-bar { font-size: 12px; color: #6b7280; margin-top: 10px; }
+
+    .item-actions { display: flex; flex-direction: column; gap: 6px; }
+    .item-actions button { padding: 6px 8px; }
+    .btn-image { background-color: #0ea5e9; }
+
+    .item-images { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 8px; }
+    .item-images:empty { display: none; }
+
+    .thumb {
+      position: relative; width: 96px; height: 96px; border-radius: 6px;
+      overflow: hidden; border: 1px solid var(--border); background: #f9fafb;
+    }
+
+    .thumb img { width: 100%; height: 100%; object-fit: cover; cursor: zoom-in; }
+    .thumb .thumb-remove {
+      position: absolute; top: 2px; right: 2px; padding: 0 6px; font-size: 12px;
+      border-radius: 10px; background: rgba(0,0,0,0.6); color: white; border: none; cursor: pointer;
+    }
+
+    #lightbox {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.85); display: none;
+      align-items: center; justify-content: center; z-index: 10000; cursor: zoom-out;
+    }
+
+    #lightbox img { max-width: 95vw; max-height: 95vh; }
+  </style>
+
+  <!-- Sortable.js -->
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+
+  <!-- Firebase SDK (v10) -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-app.js";
+    import { getFirestore, collection, doc, onSnapshot, setDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-firestore.js";
+    import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-storage.js";
+
+    // ★ Step 1-3で取得した firebaseConfig をここに貼り付けてください
+    const firebaseConfig = {
+    apiKey: "AIzaSyB0s8xdNPGiK3IJSXUdCZ_Q3-giH60zpSE",
+    authDomain: "hamcw-5d34f.firebaseapp.com",
+    projectId: "hamcw-5d34f",
+    storageBucket: "hamcw-5d34f.firebasestorage.app",
+    messagingSenderId: "94101991794",
+    appId: "1:94101991794:web:ce0cba6ee11784f9d6adeb"
+    };
+
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+    const storage = getStorage(app);
+
+    const SECRET_PASSWORD = "pota2026";
+    let roomId = "";
+    let itemsData = {};
+    let currentDay = 1;
+    let isDragging = false;
+    let imageTargetId = null;
+
+    // パスワード認証
+    window.verifyPassword = function() {
+      const inputPass = document.getElementById('passwordInput').value;
+      if (inputPass === SECRET_PASSWORD) {
+        sessionStorage.setItem('app_authenticated', 'true');
+        unlockApp();
+      } else {
+        document.getElementById('authError').style.display = 'block';
+      }
+    };
+
+    function unlockApp() {
+      document.getElementById('authModal').style.display = 'none';
+      document.getElementById('mainApp').style.display = 'block';
+      initApp();
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      if (sessionStorage.getItem('app_authenticated') === 'true') {
+        unlockApp();
+      }
+    });
+
+    function getRoomId() {
+      let hash = window.location.hash.substring(1).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
+      if (!hash) {
+        hash = Math.random().toString(36).substring(2, 10);
+        window.location.hash = hash;
+      }
+      return hash;
+    }
+
+    function initApp() {
+      roomId = getRoomId();
+      document.getElementById('shareUrl').value = window.location.href;
+
+      document.getElementById('imageFile').addEventListener('change', (e) => {
+        const files = Array.from(e.target.files || []);
+        if (imageTargetId && files.length) uploadImages(imageTargetId, files);
+        e.target.value = '';
+      });
+
+      // Firebase リアルタイム同期の開始
+      const itemsCol = collection(db, "rooms", roomId, "items");
+      onSnapshot(itemsCol, (snapshot) => {
+        itemsData = {};
+        snapshot.forEach((docSnap) => {
+          itemsData[docSnap.id] = docSnap.data();
+        });
+        document.getElementById('status').innerText = 'リアルタイム接続中 (' + new Date().toLocaleTimeString() + ')';
+        renderAll();
+      }, (err) => {
+        document.getElementById('status').innerText = '接続エラー: 設定や権限を確認してください';
+      });
+
+      initSortable();
+    }
+
+    function renderAll() {
+      renderTabs();
+      if (isDragging) return;
+      const timelineEl = document.getElementById('timeline');
+      const ids = sortedIdsForDay(currentDay);
+      const idSet = new Set(ids);
+
+      Array.from(timelineEl.children).forEach(el => {
+        if (!idSet.has(el.id)) el.remove();
+      });
+
+      ids.forEach(id => {
+        let el = document.getElementById(id);
+        if (!el) {
+          el = createItemElement(id);
+        } else {
+          syncItemElement(el, id);
+        }
+        timelineEl.appendChild(el);
+      });
+    }
+
+    function sortedIdsForDay(day) {
+      return Object.entries(itemsData)
+        .filter(([_, item]) => item.day === day)
+        .sort((a, b) => (a[1].order - b[1].order) || a[0].localeCompare(b[0]))
+        .map(([id]) => id);
+    }
+
+    function renderTabs() {
+      const dayTabsEl = document.getElementById('dayTabs');
+      let maxDay = Math.max(3, currentDay);
+      Object.values(itemsData).forEach(item => {
+        if (item.day > maxDay) maxDay = item.day;
+      });
+
+      dayTabsEl.innerHTML = '';
+      for (let i = 1; i <= maxDay; i++) {
+        const btn = document.createElement('button');
+        btn.className = `tab-btn ${i === currentDay ? 'active' : ''}`;
+        btn.innerText = `${i}日目`;
+        btn.onclick = () => switchDay(i);
+        dayTabsEl.appendChild(btn);
+      }
+
+      const addDayBtn = document.createElement('button');
+      addDayBtn.className = 'tab-btn';
+      addDayBtn.innerText = '+ 日を追加';
+      addDayBtn.onclick = () => switchDay(maxDay + 1);
+      dayTabsEl.appendChild(addDayBtn);
+    }
+
+    function switchDay(day) {
+      currentDay = day;
+      document.getElementById('timeline').innerHTML = '';
+      renderAll();
+    }
+
+    function initSortable() {
+      const timelineEl = document.getElementById('timeline');
+      new Sortable(timelineEl, {
+        animation: 150,
+        handle: '.drag-handle',
+        onStart: () => { isDragging = true; },
+        onEnd: () => {
+          isDragging = false;
+          Array.from(timelineEl.children).forEach((child, index) => {
+            const item = itemsData[child.id];
+            if (item && item.order !== index) {
+              item.order = index;
+              saveItem(child.id, { order: index });
+            }
+          });
+          renderAll();
+        }
+      });
+    }
+
+    function createItemElement(id) {
+      const div = document.createElement('div');
+      div.className = 'timeline-item';
+      div.id = id;
+
+      const handle = document.createElement('div');
+      handle.className = 'drag-handle';
+      handle.textContent = '☰';
+
+      const timeInput = document.createElement('input');
+      timeInput.type = 'time';
+      timeInput.className = 'item-time';
+      timeInput.addEventListener('change', () => saveItem(id, { time: timeInput.value }));
+
+      const memoInput = document.createElement('textarea');
+      memoInput.className = 'item-memo';
+      memoInput.rows = 2;
+      memoInput.placeholder = '移動地（Park-ID/運用周波数など）...';
+      memoInput.addEventListener('change', () => saveItem(id, { memo: memoInput.value }));
+      memoInput.addEventListener('paste', (e) => {
+        const files = Array.from(e.clipboardData?.files || []).filter(f => f.type.startsWith('image/'));
+        if (files.length) { e.preventDefault(); uploadImages(id, files); }
+      });
+
+      const actions = document.createElement('div');
+      actions.className = 'item-actions';
+
+      const imageBtn = document.createElement('button');
+      imageBtn.className = 'btn-image';
+      imageBtn.textContent = '🖼';
+      imageBtn.onclick = () => { imageTargetId = id; document.getElementById('imageFile').click(); };
+
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'btn-danger';
+      removeBtn.textContent = '✕';
+      removeBtn.onclick = () => removeItem(id);
+
+      actions.append(imageBtn, removeBtn);
+      const imagesEl = document.createElement('div');
+      imagesEl.className = 'item-images';
+
+      div.append(handle, timeInput, memoInput, actions, imagesEl);
+      syncItemElement(div, id);
+      return div;
+    }
+
+    function syncItemElement(el, id) {
+      const data = itemsData[id];
+      if (!data) return;
+      const timeInput = el.querySelector('.item-time');
+      const memoInput = el.querySelector('.item-memo');
+
+      if (document.activeElement !== timeInput) timeInput.value = data.time || '';
+      if (document.activeElement !== memoInput) memoInput.value = data.memo || '';
+
+      renderImages(el, id);
+    }
+
+    function renderImages(el, id) {
+      const imagesEl = el.querySelector('.item-images');
+      const images = itemsData[id]?.images || [];
+      imagesEl.innerHTML = '';
+
+      images.forEach((imgObj, idx) => {
+        const thumb = document.createElement('div');
+        thumb.className = 'thumb';
+
+        const img = document.createElement('img');
+        img.src = imgObj.url;
+        img.onclick = () => openLightbox(imgObj.url);
+
+        const rm = document.createElement('button');
+        rm.className = 'thumb-remove';
+        rm.textContent = '✕';
+        rm.onclick = () => removeImage(id, imgObj);
+
+        thumb.append(img, rm);
+        imagesEl.appendChild(thumb);
+      });
+    }
+
+    function openLightbox(src) {
+      const lb = document.getElementById('lightbox');
+      lb.querySelector('img').src = src;
+      lb.style.display = 'flex';
+    }
+
+    async function saveItem(id, patchData) {
+      const itemRef = doc(db, "rooms", roomId, "items", id);
+      const current = itemsData[id] || {};
+      await setDoc(itemRef, { ...current, ...patchData }, { merge: true });
+    }
+
+    window.addItem = async function() {
+      const newItemId = 'item_' + Date.now();
+      const orders = Object.values(itemsData).filter(i => i.day === currentDay).map(i => i.order);
+      const item = {
+        time: '09:00',
+        memo: '',
+        day: currentDay,
+        order: orders.length ? Math.max(...orders) + 1 : 0,
+        images: []
+      };
+      await saveItem(newItemId, item);
+    };
+
+    async function removeItem(id) {
+      if (!confirm('この予定を削除しますか？')) return;
+      await deleteDoc(doc(db, "rooms", roomId, "items", id));
+    }
+
+    async function uploadImages(id, files) {
+      const currentImages = itemsData[id]?.images || [];
+      const uploaded = [];
+
+      for (const file of files) {
+        const storageRef = ref(storage, `${roomId}/${Date.now()}_${file.name}`);
+        await uploadBytes(storageRef, file);
+        const url = await getDownloadURL(storageRef);
+        uploaded.push({ url, path: storageRef.fullPath });
+      }
+
+      await saveItem(id, { images: [...currentImages, ...uploaded] });
+    }
+
+    async function removeImage(id, imgObj) {
+      if (!confirm('画像を削除しますか？')) return;
+      const currentImages = itemsData[id]?.images || [];
+      const nextImages = currentImages.filter(i => i.url !== imgObj.url);
+      await saveItem(id, { images: nextImages });
+
+      if (imgObj.path) {
+        try { await deleteObject(ref(storage, imgObj.path)); } catch(e){}
+      }
+    }
+
+    window.copyShareUrl = function() {
+      const copyText = document.getElementById("shareUrl");
+      copyText.select();
+      navigator.clipboard.writeText(copyText.value);
+      alert("共有用URLをコピーしました！メンバーに転送してください。");
+    };
+  </script>
+</head>
+<body>
+
+<div id="authModal">
+  <div class="auth-card">
+    <h2>パスワード認証</h2>
+    <p style="font-size: 13px; color: #6b7280; margin-bottom: 16px;">
+      共同編集画面を開くには合言葉を入力してください。
+    </p>
+    <input type="password" id="passwordInput" placeholder="パスワードを入力" onkeydown="if(event.key==='Enter') verifyPassword()">
+    <button onclick="verifyPassword()">送信</button>
+    <div id="authError" class="auth-error">パスワードが間違っています</div>
+  </div>
+</div>
+
+<div class="container" id="mainApp">
+  <div class="card">
+    <h1>POTA CW長野県一斉移動 (リアルタイム共有)</h1>
+    <p style="font-size: 13px; color: #4b5563; margin-bottom: 12px;">
+      このページのURLを参加者に共有すると、誰でもリアルタイムで共同編集できます。
+    </p>
+    
+    <div class="share-box">
+      <input type="text" id="shareUrl" readonly>
+      <button onclick="copyShareUrl()">URLをコピー</button>
+    </div>
+
+    <div class="status-bar" id="status">同期状態: 接続中...</div>
+  </div>
+
+  <div class="card">
+    <div class="day-tabs" id="dayTabs"></div>
+    <div id="timeline"></div>
+    <button onclick="addItem()" style="margin-top: 15px; width: 100%;">+ 予定を追加</button>
+  </div>
+</div>
+
+<div id="lightbox" onclick="this.style.display='none'"><img alt=""></div>
+<input type="file" id="imageFile" accept="image/*" multiple style="display:none">
+
+</body>
+</html>
